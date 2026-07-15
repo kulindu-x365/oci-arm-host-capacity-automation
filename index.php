@@ -8,11 +8,11 @@ $pathPrefix = ''; // e.g. /usr/share/nginx/oci-arm-host-capacity/
 require "{$pathPrefix}vendor/autoload.php";
 
 use Dotenv\Dotenv;
-use Hitrov\Exception\ApiCallException;
 use Hitrov\FileCache;
 use Hitrov\OciApi;
 use Hitrov\OciConfig;
 use Hitrov\TooManyRequestsWaiter;
+use Hitrov\Worker;
 
 $envFilename = empty($argv[1]) ? '.env' : $argv[1];
 $dotenv = Dotenv::createUnsafeImmutable(__DIR__, $envFilename);
@@ -49,20 +49,22 @@ $api = new OciApi();
 if (getenv('CACHE_AVAILABILITY_DOMAINS')) {
     $api->setCache(new FileCache($config));
 }
+
+$waiter = null;
 if (getenv('TOO_MANY_REQUESTS_TIME_WAIT')) {
-    $api->setWaiter(new TooManyRequestsWaiter((int) getenv('TOO_MANY_REQUESTS_TIME_WAIT')));
+    $waiter = new TooManyRequestsWaiter((int) getenv('TOO_MANY_REQUESTS_TIME_WAIT'));
+    $api->setWaiter($waiter);
 }
-$notifier = (function (): \Hitrov\Interfaces\NotifierInterface {
-    /*
-     * if you have own https://core.telegram.org/bots
-     * and set TELEGRAM_BOT_API_KEY and your TELEGRAM_USER_ID in .env
-     *
-     * then you can get notified when script will succeed.
-     * otherwise - don't mind OR develop you own NotifierInterface
-     * to e.g. send SMS or email.
-     */
-    return new \Hitrov\Notification\Telegram();
-})();
+
+/*
+ * if you have own https://core.telegram.org/bots
+ * and set TELEGRAM_BOT_API_KEY and your TELEGRAM_USER_ID in .env
+ *
+ * then you can get notified when script will succeed.
+ * otherwise - don't mind OR develop you own NotifierInterface
+ * to e.g. send SMS or email.
+ */
+$notifier = new \Hitrov\Notification\Telegram();
 
 $shape = getenv('OCI_SHAPE');
 
@@ -71,55 +73,22 @@ if (getenv('OCI_MAX_INSTANCES') !== false) {
     $maxRunningInstancesOfThatShape = (int) getenv('OCI_MAX_INSTANCES');
 }
 
-$instances = $api->getInstances($config);
+$worker = new Worker(
+    $api,
+    $config,
+    $shape,
+    $maxRunningInstancesOfThatShape,
+    (string) getenv('OCI_SSH_PUBLIC_KEY'),
+    $notifier,
+    $waiter
+);
 
-$existingInstances = $api->checkExistingInstances($config, $instances, $shape, $maxRunningInstancesOfThatShape);
-if ($existingInstances) {
-    echo "$existingInstances\n";
-    return;
-}
+// makes exactly one attempt, same as before - meant to be re-run by cron/GitHub Actions.
+// unlike before, a rate-limit wait (TooManyRequestsWaiterException) is reported as a normal
+// message instead of an uncaught fatal error.
+$result = $worker->attemptOnce();
 
-if (!empty($config->availabilityDomains)) {
-    if (is_array($config->availabilityDomains)) {
-        $availabilityDomains = $config->availabilityDomains;
-    } else {
-        $availabilityDomains = [ $config->availabilityDomains ];
-    }
-} else {
-    $availabilityDomains = $api->getAvailabilityDomains($config);
-}
-
-foreach ($availabilityDomains as $availabilityDomainEntity) {
-    $availabilityDomain = is_array($availabilityDomainEntity) ? $availabilityDomainEntity['name'] : $availabilityDomainEntity;
-    try {
-        $instanceDetails = $api->createInstance($config, $shape, getenv('OCI_SSH_PUBLIC_KEY'), $availabilityDomain);
-    } catch(ApiCallException $e) {
-        $message = $e->getMessage();
-        echo "$message\n";
-//            if ($notifier->isSupported()) {
-//                $notifier->notify($message);
-//            }
-
-        if (
-            $e->getCode() === 500 &&
-            strpos($message, 'InternalError') !== false &&
-            strpos($message, 'Out of host capacity') !== false
-        ) {
-            // trying next availability domain
-            sleep(16);
-            continue;
-        }
-
-        // current config is broken
-        return;
-    }
-
-    // success
-    $message = json_encode($instanceDetails, JSON_PRETTY_PRINT);
-    echo "$message\n";
-    if ($notifier->isSupported()) {
-        $notifier->notify($message);
-    }
-
-    return;
+echo "{$result['message']}\n";
+if ($result['status'] === 'success' && !empty($result['instance'])) {
+    echo json_encode($result['instance'], JSON_PRETTY_PRINT) . "\n";
 }

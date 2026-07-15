@@ -34,6 +34,7 @@ is a bit outdated regarding [Configuration](#configuration) but still can be use
   - [GitHub actions (workflows)](#github-actions-workflows)
     - [Setup](#setup)
     - [Read This Carefully](#read-this-carefully)
+- [Continuous mode (Railway / long-running worker)](#continuous-mode-railway--long-running-worker)
 - [How it works](#how-it-works)
 - [Assigning public IP address](#assigning-public-ip-address)
 - [Troubleshooting](#troubleshooting)
@@ -277,7 +278,35 @@ Here's the example https://github.com/hitrov/oci-arm-host-capacity/runs/47279044
 
 #### Read This Carefully
 
-Specific GitHub Workflows [commit](https://github.com/hitrov/oci-arm-host-capacity/commit/67fe41ebfb9f385ae1614c97b74195ea318c8db7) 
+Specific GitHub Workflows [commit](https://github.com/hitrov/oci-arm-host-capacity/commit/67fe41ebfb9f385ae1614c97b74195ea318c8db7)
+
+## Continuous mode (Railway / long-running worker)
+
+`index.php` is designed to be re-run periodically (cron, GitHub Actions) - it makes one attempt and exits.
+For hosts like [Railway](https://railway.app) where you want a single long-running service that keeps
+retrying by itself until it succeeds, and a page to check progress, use `worker.php` instead.
+
+- **`worker.php`** - loops forever: checks capacity, tries to create the instance, waits (respecting the
+  `TOO_MANY_REQUESTS_TIME_WAIT` cooldown after a 429, or `POLL_INTERVAL_SECONDS` otherwise, default 60s),
+  and repeats. It stops looping as soon as an instance is successfully created (or one already exists).
+  Every attempt is written to `public/status.json`.
+- **`public/index.php`** - a small status page that polls `public/status.json` and shows a colored badge:
+  gray (starting), blue (searching), amber (rate-limited/waiting), green (success), red (error).
+- **`start.sh`** - the Railway start command (wired up via `Procfile`). It runs `worker.php` in the
+  background and `php -S 0.0.0.0:$PORT -t public` in the foreground, so the OCI polling loop and the
+  status page run side by side in the same service.
+
+Setup on Railway:
+
+1. Deploy this repo as a Railway service (Nixpacks auto-detects PHP + composer).
+2. In the service's **Variables** tab, set all the variables from [`.env.example`](.env.example) - do not
+   commit a real `.env` file.
+3. Railway will use the `Procfile` (`web: bash start.sh`) automatically. No further configuration needed.
+4. Open the service's public URL to see the status page. It updates every ~5 seconds.
+
+This fixes a bug present in earlier versions of this fork: `TooManyRequestsWaiterException` (thrown while
+the 429 cooldown is active) used to be an uncaught fatal error, which made hosts like Railway treat a normal
+"please wait" as a crash. Both `index.php` and `worker.php` now handle it as a regular status/message instead.
 used in the [Setup](#setup) take an advantage of [Scheduled events](https://docs.github.com/en/actions/learn-github-actions/events-that-trigger-workflows#scheduled-events)  
 and **will endlessly run the script every 5-20 minutes** (how exactly often - depends on runners' availability). 
 
