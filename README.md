@@ -98,6 +98,12 @@ Adjust these values in `.env` file accordingly:
 
 `OCI_PRIVATE_KEY_FILENAME` is an absolute path (including directories) or direct public accessible URL to your *.pem private key file.
 
+For hosted deployments (e.g. Railway) where you don't want the key to exist as a file in the repo at all,
+set `OCI_PRIVATE_KEY_CONTENT` instead - paste the full contents of the `.pem` file directly into that
+environment variable. If it's set, it takes priority over `OCI_PRIVATE_KEY_FILENAME`. **Never commit either
+value** - set them as real environment variables (Railway's Variables tab, GitHub Actions secrets, etc.), not
+in a tracked file.
+
 ### Instance parameters
 
 #### Mandatory
