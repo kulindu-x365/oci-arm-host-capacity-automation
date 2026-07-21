@@ -17,6 +17,7 @@ use Dotenv\Dotenv;
 use Hitrov\FileCache;
 use Hitrov\OciApi;
 use Hitrov\OciConfig;
+use Hitrov\PrivateKeyResolver;
 use Hitrov\StatusWriter;
 use Hitrov\TooManyRequestsWaiter;
 use Hitrov\Worker;
@@ -30,7 +31,7 @@ $config = new OciConfig(
     getenv('OCI_USER_ID'),
     getenv('OCI_TENANCY_ID'),
     getenv('OCI_KEY_FINGERPRINT'),
-    getenv('OCI_PRIVATE_KEY_FILENAME'),
+    PrivateKeyResolver::resolveFilename(),
     getenv('OCI_AVAILABILITY_DOMAIN') ?: null,
     getenv('OCI_SUBNET_ID'),
     getenv('OCI_IMAGE_ID'),
